@@ -1,3 +1,5 @@
+import path from 'path'
+
 import { TamaguiOptions, loadTamagui, watchTamaguiConfig } from '@tamagui/static'
 import type { Compiler, RuleSetRule } from 'webpack'
 
@@ -10,7 +12,6 @@ export type PluginOptions = TamaguiOptions & {
   disableEsbuildLoader?: boolean
   disableModuleJSXEntry?: boolean
   disableWatchConfig?: boolean
-  outputFileName?: string
 }
 
 export class TamaguiPlugin {
@@ -66,48 +67,73 @@ export class TamaguiPlugin {
       )
     })
 
-    compiler.hooks.emit.tapAsync('CombineCSSPlugin', (compilation, callback) => {
-      const { outputFileName = 'allStyles.css' } = this.options
-      const cssFiles = Object.keys(compilation.assets).filter((asset) =>
-        asset.endsWith('.css')
-      )
+    compiler.hooks.make.tap(this.pluginName, (compilation) => {
+      const getContentHash = (source) => {
+        const { outputOptions } = compilation
+        const { hashDigest, hashDigestLength, hashFunction, hashSalt } = outputOptions
+        const hash = compiler.webpack.util.createHash(hashFunction)
 
-      if (cssFiles.length === 0) {
-        callback()
-        return
-      }
-
-      const combinedCSS = cssFiles.reduce((acc, file) => {
-        const cssContent = compilation.assets[file].source()
-        return `${acc}${cssContent}`
-      }, '')
-
-      const deDuplicatedCSS = this.removeDuplicates(combinedCSS)
-
-      // TODO: need to handle map, sourceMap, buffer, and updateHashCorrectly
-      compilation.assets[outputFileName] = {
-        source: () => deDuplicatedCSS,
-        size: () => deDuplicatedCSS.length,
-        updateHash: (hash) => {
-          compilation.assets[outputFileName].updateHash(hash)
-        },
-        buffer: () => {
-          return Buffer.from(deDuplicatedCSS, 'utf-8')
-        },
-        // map: compilation.assets[outputFileName].map,
-        // sourceAndMap: () => {
-        //   const { source, map } = compilation.assets[outputFileName].sourceAndMap()
-        //   return { source, map }
-        // },
-      }
-
-      cssFiles.forEach((file) => {
-        if (file !== outputFileName) {
-          delete compilation.assets[file]
+        if (hashSalt) {
+          hash.update(hashSalt)
         }
-      })
 
-      callback()
+        hash.update(source)
+
+        const fullContentHash = hash.digest(hashDigest)
+
+        return fullContentHash.toString().slice(0, hashDigestLength)
+      }
+
+      compilation.hooks.processAssets.tap(
+        {
+          name: this.pluginName,
+          stage: compiler.webpack.Compilation.PROCESS_ASSETS_STAGE_ADDITIONAL,
+        },
+        (assets) => {
+          try {
+            const { cssFileName = 'combined.css' } = this.options
+
+            const cssFiles = Object.keys(assets).filter((asset) => asset.endsWith('.css'))
+
+            if (cssFiles.length === 0) {
+              return
+            }
+
+            const combinedCSS = cssFiles.reduce((acc, file) => {
+              const cssContent = compilation.assets[file].source()
+              return `${acc}${cssContent}`
+            }, '')
+
+            const contentHash = getContentHash(combinedCSS)
+
+            const data = {
+              fileName: cssFileName,
+              contentHash,
+              chunk: {
+                id: cssFileName,
+                name: path.parse(cssFileName).name,
+                hash: contentHash,
+              },
+            }
+
+            const { path: hashedPath, info: hashedInfo } = compilation.getPathWithInfo(
+              data.fileName,
+              data
+            )
+            compilation.emitAsset(
+              hashedPath,
+              new compiler.webpack.sources.RawSource(combinedCSS),
+              hashedInfo
+            )
+
+            cssFiles.forEach((file) => {
+              compilation.deleteAsset(file)
+            })
+          } catch (error: any) {
+            compilation.errors.push(error)
+          }
+        }
+      )
     })
 
     compiler.options.resolve.extensions = [

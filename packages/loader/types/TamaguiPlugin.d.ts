@@ -9,7 +9,6 @@ export type PluginOptions = TamaguiOptions & {
     disableEsbuildLoader?: boolean;
     disableModuleJSXEntry?: boolean;
     disableWatchConfig?: boolean;
-    outputFileName?: string;
 };
 export declare class TamaguiPlugin {
     options: PluginOptions;
